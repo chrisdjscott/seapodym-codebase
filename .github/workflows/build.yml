@@ -23,7 +23,7 @@ jobs:
         uses: actions/cache@v3
         with:
           path: admb-13.1
-          key: ${{ runner.os }}-primes
+          key: ${{ runner.os }}-admb
 
       - name: Install ADMB
         if: steps.cache-admb.outputs.cache-hit != 'true'
@@ -45,4 +45,4 @@ jobs:
           export ADMB_HOME=${PWD}/admb-13.1
           make -f Makefile.den -j 4
       - name: Print seapodym_densities help
-        run: seapodym_densities -h
+        run: ./bin/seapodym_densities -h
