@@ -6,24 +6,43 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: 'ubuntu-22.04'
     steps:
       - uses: actions/checkout@v3
+
       - name: Install libxml
         run: sudo apt-get install libxml2-dev
+
       - name: Print gcc version
         run: gcc --version
       - name: Print g++ version
         run: g++ --version
+
+      - name: Cache ADMB
+        id: cache-admb
+        uses: actions/cache@v3
+        with:
+          path: admb-13.1
+          key: ${{ runner.os }}-primes
+
       - name: Install ADMB
+        if: steps.cache-admb.outputs.cache-hit != 'true'
         run: |
           wget https://github.com/admb-project/admb/releases/download/admb-13.1/admb-13.1-linux.zip
           unzip admb-13.1-linux.zip
           ln -s ${PWD}/admb-13.1/lib/libadmbo-x86_64-linux-g++11.a ${PWD}/admb-13.1/lib/libadmbo.a
           ls -l admb-13.1/lib
+
       - name: Build seapodym
         run: |
           export ADMB_HOME=${PWD}/admb-13.1
           make -j 4
       - name: Print seapodym help
         run: ./bin/seapodym -h
+
+      - name: Build seapodym_densities
+        run: |
+          export ADMB_HOME=${PWD}/admb-13.1
+          make -f Makefile.den -j 4
+      - name: Print seapodym_densities help
+        run: seapodym_densities -h
