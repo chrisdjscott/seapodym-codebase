@@ -1,4 +1,5 @@
 #include "calpop.h"
+#include <omp.h>
 
 ///Main function with memory control and adjoint functions for: 
 ///precalrec and calrec for adults functions. These routines finalize 
@@ -104,6 +105,37 @@ void CCalpop::Precalrec_Calrec_adult(const PMap& map, VarMatrices& mat, VarParam
 	else
 		gradient_structure::GRAD_STACK1->set_gradient_stack(dv_calrec_with_catch_precalrec);
 } 
+
+
+dmatrix add_dmatrix_reduc(const dmatrix &x, const dmatrix &y) {
+    dmatrix out(x);
+    out.initialize();
+
+//    out = x + y;
+    for (int i = x.rowmin(); i <= x.rowmax(); i++) {
+        for (int j = x.colmin(); j <= x.colmax(); j++) {
+            out.elem(i, j) = x.elem(i, j) + y.elem(i, j);
+        }
+    }
+
+    return out;
+}
+
+
+dmatrix init_dmatrix_reduc(const dmatrix &x) {
+    // create dmatrix with same dimensions as x
+    // TODO: might need a different constructor in case this is a shallow copy???
+    dmatrix out(x);
+
+    // initialise it to 0
+//    out.initialize();
+    out = 0.0;
+
+    return out;
+}
+
+//#pragma omp declare reduction(add_dmatrix:dmatrix:omp_out=add_dmatrix_reduc(omp_out,omp_in)) initializer(omp_priv=init_dmatrix_reduc(omp_orig))
+#pragma omp declare reduction(add_dmatrix:dmatrix:omp_out+=omp_in) initializer(omp_priv=init_dmatrix_reduc(omp_orig))
 
 void dv_calrec_precalrec()
 {
@@ -263,6 +295,12 @@ void dv_calrec_precalrec()
 		} 
 		//end of recomputation
 
+        //std::cout << ">>>>> i,j sup,inf: " << isup << " " << iinf << " " << jsup << " " << jinf << std::endl;
+        #pragma omp parallel for default(none) \
+                firstprivate(uvec,dfuvec,rhs,dfrhs,gam,dfgam) \
+                shared(a,uuint,iterationNumber,bm,c,dfuu,dfa,dfbm,dfc,map,f,d,ybet,dfd,dfybet,dff,isup,iinf) \
+                reduction(add_dmatrix:dfuuint)
+        // TODO: check dfuvec, maybe needed in reduction
 		for (int i = isup; i >= iinf; i--){
 
 			const int jmin = map->jinf[i];
@@ -280,6 +318,7 @@ void dv_calrec_precalrec()
 				dfuu(i,j) = 0.0;
 			}
 			dftridag1(d(i),ybet(i),f(i),rhs,uvec,gam,dfd(i),dfybet(i),dff(i),dfrhs,dfuvec,dfgam,jmin,jmax);
+            //#pragma omp simd
 			for (int j=jmax; j>=jmin; j--) {
 
 					//rhs[j] = -a[j][i]*uuint[i-1][j]+(2*iterationNumber-bm[j][i])*uuint[i][j] - c[j][i]*uuint[i+1][j];
@@ -292,8 +331,13 @@ void dv_calrec_precalrec()
 					dfrhs(j)       = 0.0;
 			}
 		}
+        //std::cout << ">>>>>> end loop" << std::endl;
 
-
+        // TODO: check dfuvec
+//        #pragma omp parallel for default(none) \
+//                private(rhs,dfrhs,uvec,dfuvec,gam,dfgam) \
+//                shared(jsup,jinf,d,uu,iterationNumber,e,f,dfuuint,a,xbet,c,dfd,dfe,dff,dfa,dfxbet,dfc,map) \
+//                reduction(add_dmatrix:dfuu)
 		for (int j = jsup; j >= jinf; j--){
 			const int imin = map->iinf[j]; 
 			const int imax = map->isup[j];
@@ -310,6 +354,7 @@ void dv_calrec_precalrec()
 			}
 			dftridag1(a(j),xbet(j),c(j),rhs,uvec,gam,dfa(j),dfxbet(j),dfc(j),dfrhs,dfuvec,dfgam,imin,imax);
 
+            #pragma omp simd
 			for (int i=imax; i>=imin; i--){
 
 					//rhs[i] = -d[i][j]*uu[i][j-1] + (2*iterationNumber-e[i][j])*uu[i][j] - f[i][j]*uu[i][j+1];
