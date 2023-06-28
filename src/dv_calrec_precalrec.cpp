@@ -1,5 +1,5 @@
 #include "calpop.h"
-#include <omp.h>
+#include "openmp_helper.h"
 #include <vector>
 
 ///Main function with memory control and adjoint functions for: 
