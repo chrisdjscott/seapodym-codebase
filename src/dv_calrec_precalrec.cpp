@@ -110,8 +110,8 @@ void CCalpop::Precalrec_Calrec_adult(const PMap& map, VarMatrices& mat, VarParam
 
 dmatrix add_dmatrix_reduc(const dmatrix &x, const dmatrix &y) {
     dmatrix out;
-    out.allocate(x);  // allocate out to have same dimensions as x
-//    out.initialize();  // initialize contents of out to 0
+    out.allocate(x);
+    out.initialize();
     out = x + y;
 
     return out;
@@ -121,14 +121,14 @@ dmatrix add_dmatrix_reduc(const dmatrix &x, const dmatrix &y) {
 dmatrix init_dmatrix_reduc(const dmatrix &x) {
     // create dmatrix with same dimensions as x and initialised to 0
     dmatrix out;
-    out.allocate(x);  // allocate out to have same size as x
-    out.initialize();  // initialise contents of out to 0
+    out.allocate(x);
+    out.initialize();
 
     return out;
 }
 
-//#pragma omp declare reduction(add_dmatrix:dmatrix:omp_out=add_dmatrix_reduc(omp_out,omp_in)) initializer(omp_priv=init_dmatrix_reduc(omp_orig))
-#pragma omp declare reduction(add_dmatrix:dmatrix:omp_out+=omp_in) initializer(omp_priv=init_dmatrix_reduc(omp_orig))
+#pragma omp declare reduction(add_dmatrix:dmatrix:omp_out=add_dmatrix_reduc(omp_out,omp_in)) initializer(omp_priv=init_dmatrix_reduc(omp_orig))
+//#pragma omp declare reduction(add_dmatrix:dmatrix:omp_out+=omp_in) initializer(omp_priv=init_dmatrix_reduc(omp_orig))
 
 void dv_calrec_precalrec()
 {
@@ -253,6 +253,34 @@ void dv_calrec_precalrec()
 	const dmatrix_position uuint_pos(pop->uuint);
 	dmatrix uuint(uuint_pos);
 
+    // private dvectors for each OpenMP thread
+    int num_omp_threads = omp_get_max_threads();
+    std::vector<dvector> uvec_threads(num_omp_threads);
+    std::vector<dvector> dfuvec_threads(num_omp_threads);
+    std::vector<dvector> rhs_threads(num_omp_threads);
+    std::vector<dvector> dfrhs_threads(num_omp_threads);
+    std::vector<dvector> gam_threads(num_omp_threads);
+    std::vector<dvector> dfgam_threads(num_omp_threads);
+    std::vector<dmatrix> dfuuint_threads(num_omp_threads);
+    std::vector<dmatrix> dfuu_threads(num_omp_threads);
+    for (int t = 0; t < num_omp_threads; t++) {
+        uvec_threads[t].allocate(uvec);
+        uvec_threads[t].initialize();
+        dfuvec_threads[t].allocate(dfuvec);
+        dfuvec_threads[t].initialize();
+        rhs_threads[t].allocate(rhs);
+        rhs_threads[t].initialize();
+        dfrhs_threads[t].allocate(dfrhs);
+        dfrhs_threads[t].initialize();
+        gam_threads[t].allocate(gam);
+        gam_threads[t].initialize();
+        dfgam_threads[t].allocate(dfgam);
+        dfgam_threads[t].initialize();
+        dfuuint_threads[t].allocate(uuint_pos);
+        dfuuint_threads[t].initialize();
+        dfuu_threads[t].allocate(uu_pos);
+        dfuu_threads[t].initialize();
+    }
 
 	//ADJOINT FOR CALREC FUNCTION
 	for (int itr = iterationNumber; itr >= 1; itr--){
@@ -265,57 +293,40 @@ void dv_calrec_precalrec()
 
 		uuint.initialize();
 
+        for (int tid = 0; tid < num_omp_threads; tid++) {
+            dfuuint_threads[tid].initialize();
+            dfuu_threads[tid].initialize();
+        }
+
 		//first recompute uuint from uu
+        #pragma omp parallel for
 		for (int j = map->jmin; j <= map->jmax; j++)
 		{
+            const int tid = omp_get_thread_num();
+
 			const int imin = map->iinf[j]; 
 			const int imax = map->isup[j];
 
 			for (int i = imin; i <= imax; i++)
-				rhs[i]=-d[i][j]*uu(i,j-1) + (2*iterationNumber-e[i][j])*uu(i,j) - f[i][j]*uu(i,j+1);
+				rhs_threads[tid][i] = -d[i][j]*uu(i,j-1) + (2*iterationNumber-e[i][j])*uu(i,j) - f[i][j]*uu(i,j+1);
                         
 			//tridag(a[j],xbet[j],c[j],rhs,uvec,gam,imin,imax);
-			gam[imin] = rhs[imin];
+			gam_threads[tid][imin] = rhs_threads[tid][imin];
 			for (int i=imin+1 ; i<=imax ; i++)
-				gam[i] = rhs[i]-gam[i-1]*a[j][i]*xbet[j][i-1];
+				gam_threads[tid][i] = rhs_threads[tid][i]-gam_threads[tid][i-1]*a[j][i]*xbet[j][i-1];
 	
-			uvec[imax] = gam[imax]*xbet[j][imax];
+			uvec_threads[tid][imax] = gam_threads[tid][imax]*xbet[j][imax];
 			for (int i=imax-1; i>=imin ; i--)
-				uvec[i] = (gam[i]-c[j][i]*uvec[i+1])*xbet[j][i];
-
+				uvec_threads[tid][i] = (gam_threads[tid][i]-c[j][i]*uvec_threads[tid][i+1])*xbet[j][i];
 
 			for (int i = imin; i <= imax; i++)
-				uuint(i,j) = uvec[i];
+				uuint(i,j) = uvec_threads[tid][i];
 		} 
 		//end of recomputation
 
-        // private dvectors for threads (should be outside this loop)
-        int num_omp_threads = omp_get_max_threads();
-        std::vector<dvector> uvec_threads(num_omp_threads);
-        std::vector<dvector> dfuvec_threads(num_omp_threads);
-        std::vector<dvector> rhs_threads(num_omp_threads);
-        std::vector<dvector> dfrhs_threads(num_omp_threads);
-        std::vector<dvector> gam_threads(num_omp_threads);
-        std::vector<dvector> dfgam_threads(num_omp_threads);
-        std::vector<dmatrix> dfuuint_threads(num_omp_threads);
-        for (int t = 0; t < num_omp_threads; t++) {
-            uvec_threads[t] = uvec;  // deep copy??? otherwise allocate and then set equal?
-            dfuvec_threads[t] = dfuvec;  // deep copy??? otherwise allocate and then set equal?
-            rhs_threads[t] = rhs;  // deep copy??? otherwise allocate and then set equal?
-            dfrhs_threads[t] = dfrhs;  // deep copy??? otherwise allocate and then set equal?
-            gam_threads[t] = gam;  // deep copy??? otherwise allocate and then set equal?
-            dfgam_threads[t] = dfgam;  // deep copy??? otherwise allocate and then set equal?
-            dfuuint_threads[t].allocate(dfuuint);
-            dfuuint_threads[t].initialize();
-        }
-
-        //std::cout << ">>>>> i,j sup,inf: " << isup << " " << iinf << " " << jsup << " " << jinf << std::endl;
-        #pragma omp parallel for default(none) \
-                shared(uvec_threads,dfuvec_threads,rhs_threads,dfrhs_threads,gam_threads,dfgam_threads,dfuuint_threads) \
-                shared(a,uuint,iterationNumber,bm,c,dfuu,dfa,dfbm,dfc,map,f,d,ybet,dfd,dfybet,dff,isup,iinf) \
-        // TODO: check dfuvec, maybe needed in reduction
+        #pragma omp parallel for
 		for (int i = isup; i >= iinf; i--){
-            int tid = omp_get_thread_num();
+            const int tid = omp_get_thread_num();
 
 			const int jmin = map->jinf[i];
 			const int jmax = map->jsup[i];
@@ -329,11 +340,10 @@ void dv_calrec_precalrec()
 			for (int j=jmin; j<=jmax; j++){
 				//uu(i,j) = uvec(j); 
 				dfuvec_threads[tid](j)+= dfuu(i,j);
-				dfuu(i,j) = 0.0;
+//				dfuu(i,j) = 0.0;
 			}
 			dftridag1(d(i),ybet(i),f(i),rhs_threads[tid],uvec_threads[tid],gam_threads[tid],dfd(i),dfybet(i),dff(i),
                     dfrhs_threads[tid],dfuvec_threads[tid],dfgam_threads[tid],jmin,jmax);
-            //#pragma omp simd
 			for (int j=jmax; j>=jmin; j--) {
 
 					//rhs[j] = -a[j][i]*uuint[i-1][j]+(2*iterationNumber-bm[j][i])*uuint[i][j] - c[j][i]*uuint[i+1][j];
@@ -349,42 +359,42 @@ void dv_calrec_precalrec()
         for (int tid = 0; tid < num_omp_threads; tid++) {
             dfuuint += dfuuint_threads[tid];
         }
-        //std::cout << ">>>>>> end loop" << std::endl;
 
-        // TODO: check dfuvec
-//        #pragma omp parallel for default(none) \
-//                private(rhs,dfrhs,uvec,dfuvec,gam,dfgam) \
-//                shared(jsup,jinf,d,uu,iterationNumber,e,f,dfuuint,a,xbet,c,dfd,dfe,dff,dfa,dfxbet,dfc,map) \
-//                reduction(add_dmatrix:dfuu)
+        #pragma omp parallel for
 		for (int j = jsup; j >= jinf; j--){
+            const int tid = omp_get_thread_num();
+
 			const int imin = map->iinf[j]; 
 			const int imax = map->isup[j];
 	
 			// recomputing rhs(i)
 			for (int i = imin; i <= imax; i++) {   
-					rhs[i] = -d[i][j]*uu[i][j-1] + (2*iterationNumber-e[i][j])*uu[i][j] - f[i][j]*uu[i][j+1];
+					rhs_threads[tid][i] = -d[i][j]*uu[i][j-1] + (2*iterationNumber-e[i][j])*uu[i][j] - f[i][j]*uu[i][j+1];
 			}
 
 			for (int i = imax; i >= imin; i--){
 				//uuint[i][j] = uvec[i];
-				dfuvec(i)    += dfuuint(i,j);
-				dfuuint(i,j)  = 0.0;
+				dfuvec_threads[tid](i)    += dfuuint(i,j);
+//				dfuuint(i,j)  = 0.0;
 			}
-			dftridag1(a(j),xbet(j),c(j),rhs,uvec,gam,dfa(j),dfxbet(j),dfc(j),dfrhs,dfuvec,dfgam,imin,imax);
+			dftridag1(a(j),xbet(j),c(j),rhs_threads[tid],uvec_threads[tid],gam_threads[tid],dfa(j),dfxbet(j),dfc(j),dfrhs_threads[tid],dfuvec_threads[tid],dfgam_threads[tid],imin,imax);
 
-            #pragma omp simd
 			for (int i=imax; i>=imin; i--){
 
 					//rhs[i] = -d[i][j]*uu[i][j-1] + (2*iterationNumber-e[i][j])*uu[i][j] - f[i][j]*uu[i][j+1];
-					dfd(i,j)    -= uu(i,j-1)*dfrhs(i);
-					dfuu(i,j-1) -= d(i,j)*dfrhs(i);
-					dfe(i,j)    -= uu(i,j)*dfrhs(i);
-					dfuu(i,j)   += (2*iterationNumber-e[i][j])*dfrhs(i);
-					dff(i,j)    -= uu(i,j+1)*dfrhs(i);
-					dfuu(i,j+1) -= f(i,j)*dfrhs(i);
-					dfrhs(i)     = 0.0;
+					dfd(i,j)    -= uu(i,j-1)*dfrhs_threads[tid](i);
+					dfuu_threads[tid](i,j-1) -= d(i,j)*dfrhs_threads[tid](i);
+					dfe(i,j)    -= uu(i,j)*dfrhs_threads[tid](i);
+					dfuu_threads[tid](i,j)   += (2*iterationNumber-e[i][j])*dfrhs_threads[tid](i);
+					dff(i,j)    -= uu(i,j+1)*dfrhs_threads[tid](i);
+					dfuu_threads[tid](i,j+1) -= f(i,j)*dfrhs_threads[tid](i);
+					dfrhs_threads[tid](i)     = 0.0;
 			}
 		}
+        dfuu.initialize();
+        for (int tid = 0; tid < num_omp_threads; tid++) {
+            dfuu += dfuu_threads[tid];
+        }
 	}
 
 	//ADJOINT FOR PRECALREC FUNCTION
@@ -392,6 +402,7 @@ void dv_calrec_precalrec()
 	//xbet_comp(map,dt);
 	dfxbet1(dfa,dfbm,dfc,dfxbet,xbet,a,bm,c,pos_map,maxn,2*iterationNumber);
 
+    #pragma omp parallel for
 	for (int j = jsup; j >= jinf; j--){
 		const int imin = map->iinf(j);
 		const int imax = map->isup(j);
@@ -807,7 +818,7 @@ void dfxbet1(dmatrix& dfa, dmatrix& dfbm, dmatrix& dfc, dmatrix& dfxbet, dmatrix
 		const int imin = map->iinf[j];
 		const int imax = map->isup[j];
 		xbet[j][imin] = 1/(bm[j][imin]+dt);
-	        for (int i=imin+1; i<=imax ; i++){
+        for (int i=imin+1; i<=imax ; i++){
 			w[j][i] = bm[j][i]+dt-c[j][i-1]*a[j][i]*xbet[j][i-1];
 			xbet[j][i] = 1/w[j][i];
 		}
